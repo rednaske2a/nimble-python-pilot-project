@@ -1,3 +1,4 @@
+
 from dataclasses import dataclass
 import time
 from typing import Optional, Dict
@@ -18,6 +19,7 @@ class DownloadTask:
     error_message: str = ""
     start_time: float = 0
     end_time: float = 0
+    priority: int = 0  # Lower number = higher priority
     
     def get_duration(self) -> float:
         """Get the duration of the download in seconds"""

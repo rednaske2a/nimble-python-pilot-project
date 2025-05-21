@@ -1,5 +1,8 @@
+
 import re
 import requests
+import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -8,7 +11,7 @@ from urllib.parse import urlparse
 from src.models.model_info import ModelInfo
 from src.utils.logger import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 class CivitaiAPI:
     """
@@ -16,20 +19,31 @@ class CivitaiAPI:
     """
     BASE_URL = "https://civitai.com/api/v1"
     
-    def __init__(self, api_key: str = "", fetch_batch_size: int = 200):
+    def __init__(self, api_key: str = "", fetch_batch_size: int = 100, rate_limit_delay: float = 0.5):
         self.api_key = api_key
         self.fetch_batch_size = fetch_batch_size
+        self.rate_limit_delay = rate_limit_delay  # Delay between API calls in seconds
+        self.last_request_time = 0
     
     def get_headers(self) -> Dict:
         """Get request headers with API key if available"""
-        headers = {}
+        headers = {
+            "User-Agent": "CivitaiModelManager/2.0"
+        }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
     
+    def _respect_rate_limit(self):
+        """Respect rate limiting by adding delay between requests"""
+        elapsed = time.time() - self.last_request_time
+        if elapsed < self.rate_limit_delay:
+            time.sleep(self.rate_limit_delay - elapsed)
+        self.last_request_time = time.time()
+    
     def fetch_json(self, url: str, params: Dict = None) -> Dict:
         """
-        Fetch JSON data from API
+        Fetch JSON data from API with rate limiting
         
         Args:
             url: API endpoint URL
@@ -38,6 +52,8 @@ class CivitaiAPI:
         Returns:
             JSON response as dictionary
         """
+        self._respect_rate_limit()
+        
         try:
             r = requests.get(url, headers=self.get_headers(), params=params, timeout=30)
             r.raise_for_status()
@@ -56,14 +72,17 @@ class CivitaiAPI:
         Returns:
             Tuple of (model_id, version_id)
         """
+        # Match /models/{id}?modelVersionId={version_id}
         m = re.search(r"/models/(\d+).*?modelVersionId=(\d+)", url)
         if m: 
             return int(m.group(1)), int(m.group(2))
             
+        # Match /models/{id}/versions/{version_id}
         m = re.search(r"/models/(\d+)/versions/(\d+)", url)
         if m: 
             return int(m.group(1)), int(m.group(2))
             
+        # Match /models/{id}
         m = re.search(r"/models/(\d+)", url)
         if m: 
             return int(m.group(1)), None
@@ -275,3 +294,42 @@ class CivitaiAPI:
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
             return None
+    
+    def search_models(self, query: str, tags: List[str] = None, types: List[str] = None,
+                     base_models: List[str] = None, nsfw: bool = None, 
+                     limit: int = 20) -> List[Dict]:
+        """
+        Search for models using Civitai API
+        
+        Args:
+            query: Search query text
+            tags: List of tags to filter by
+            types: List of model types
+            base_models: List of base models
+            nsfw: Filter by NSFW status
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of model dictionaries
+        """
+        params = {
+            "query": query,
+            "limit": limit
+        }
+        
+        if tags:
+            params["tags"] = tags
+        
+        if types:
+            params["types"] = types
+        
+        if base_models:
+            params["baseModels"] = base_models
+        
+        if nsfw is not None:
+            params["nsfw"] = str(nsfw).lower()
+        
+        url = f"{self.BASE_URL}/models"
+        
+        result = self.fetch_json(url, params)
+        return result.get("items", [])

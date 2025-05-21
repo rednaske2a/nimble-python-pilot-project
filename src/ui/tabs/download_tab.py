@@ -1,242 +1,287 @@
-from typing import Dict, List, Optional
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit,
-    QGroupBox, QSplitter, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, 
+    QPushButton, QTextEdit, QLineEdit, QSpinBox, QFrame
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, QRegularExpression
+from PySide6.QtGui import QRegularExpressionValidator
 
 from src.ui.components.download_queue_widget import DownloadQueueWidget
 from src.ui.components.log_widget import LogWidget
 from src.models.download_task import DownloadTask
 
 class DownloadTab(QWidget):
-    """Download tab for downloading models from Civitai"""
+    """Tab for download management"""
     
-    def __init__(self, theme: Dict, parent=None):
+    add_urls_requested = Signal(list)  # urls
+    
+    def __init__(self, theme, parent=None):
         super().__init__(parent)
         self.theme = theme
-        self.parent = parent
+        self.parent_window = parent
         self.init_ui()
     
     def init_ui(self):
         """Initialize UI components"""
         layout = QVBoxLayout(self)
         
-        # App title and version
-        title_layout = QHBoxLayout()
-        app_title = QLabel("Civitai Model Manager")
-        app_title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {self.theme['text']};")
-        app_version = QLabel("v2.0")
-        app_version.setStyleSheet(f"font-size: 12px; color: {self.theme['text_tertiary']};")
-        title_layout.addWidget(app_title)
-        title_layout.addWidget(app_version, alignment=Qt.AlignBottom)
-        title_layout.addStretch()
-        layout.addLayout(title_layout)
+        # Create splitter for main content and queue
+        self.splitter = QSplitter(Qt.Horizontal)
         
-        # Divider
-        divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        divider.setFrameShadow(QFrame.Sunken)
-        divider.setStyleSheet(f"background-color: {self.theme['border']};")
-        layout.addWidget(divider)
+        # Create left panel with log and input
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
         
-        # Split view for URL input and queue
-        splitter = QSplitter(Qt.Vertical)
+        # Log widget
+        self.log_widget = LogWidget(self.theme)
         
         # URL input section
-        url_widget = QWidget()
-        url_layout = QVBoxLayout(url_widget)
+        url_section = self.create_url_input_section()
         
-        url_group = self.create_styled_group_box("Download Model")
-        url_inner_layout = QVBoxLayout(url_group)
+        left_layout.addWidget(self.log_widget, 3)
+        left_layout.addWidget(url_section, 1)
         
-        url_label = QLabel("Model URLs (one per line):")
-        url_label.setStyleSheet(f"color: {self.theme['text']};")
-        self.url_input = QPlainTextEdit()
-        self.url_input.setPlaceholderText("Paste Civitai model URLs here, one per line...")
-        self.url_input.setMinimumHeight(150)
+        # Create right panel with queue
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        
+        # Queue widget
+        self.queue_widget = DownloadQueueWidget(self.theme)
+        self.queue_widget.cancel_requested.connect(self.cancel_download)
+        self.queue_widget.clear_requested.connect(self.clear_queue)
+        
+        right_layout.addWidget(self.queue_widget)
+        
+        # Add panels to splitter
+        self.splitter.addWidget(left_panel)
+        self.splitter.addWidget(right_panel)
+        
+        # Set initial sizes
+        self.splitter.setSizes([int(self.width() * 0.6), int(self.width() * 0.4)])
+        
+        layout.addWidget(self.splitter)
+    
+    def create_url_input_section(self):
+        """Create URL input section with validation"""
+        section = QFrame()
+        section.setFrameShape(QFrame.StyledPanel)
+        section.setStyleSheet(f"""
+            QFrame {{
+                background-color: {self.theme['card']};
+                border-radius: 8px;
+                border: 1px solid {self.theme['border']};
+            }}
+        """)
+        
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Title
+        title = QLabel("Add Models to Download Queue")
+        title.setStyleSheet(f"""
+            font-size: 16px;
+            font-weight: bold;
+            color: {self.theme['text']};
+        """)
+        
+        # URL input
+        url_layout = QVBoxLayout()
+        url_label = QLabel("CivitAI URLs (one per line)")
+        url_label.setStyleSheet(f"color: {self.theme['text_secondary']};")
+        
+        self.url_input = QTextEdit()
+        self.url_input.setPlaceholderText("https://civitai.com/models/...")
+        self.url_input.setMinimumHeight(80)
         self.url_input.setStyleSheet(f"""
-            QPlainTextEdit {{
+            QTextEdit {{
                 background-color: {self.theme['input_bg']};
                 color: {self.theme['text']};
-                border: 1px solid {self.theme['input_border']};
-                border-radius: 4px;
-                padding: 4px;
-                font-family: 'Consolas', 'Courier New', monospace;
-            }}
-        """)
-        
-        button_layout = QHBoxLayout()
-        
-        self.download_btn = QPushButton("Download All")
-        self.download_btn.setStyleSheet(self.get_primary_button_style())
-        self.download_btn.clicked.connect(self.start_batch_download)
-        
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.setStyleSheet(self.get_secondary_button_style())
-        self.clear_btn.clicked.connect(lambda: self.url_input.clear())
-        
-        button_layout.addWidget(self.download_btn)
-        button_layout.addWidget(self.clear_btn)
-        
-        url_inner_layout.addWidget(url_label)
-        url_inner_layout.addWidget(self.url_input)
-        url_inner_layout.addLayout(button_layout)
-        
-        # Queue status
-        self.queue_status_label = QLabel("Queue: 0")
-        self.queue_status_label.setStyleSheet(f"font-size: 14px; color: {self.theme['text_secondary']};")
-        url_inner_layout.addWidget(self.queue_status_label)
-        
-        url_layout.addWidget(url_group)
-        
-        
-        # --- Create a horizontal splitter for queue and log ---
-        queue_log_splitter = QSplitter(Qt.Horizontal)
-
-        # Left: Download Queue Section
-        queue_widget = QWidget()
-        queue_layout = QVBoxLayout(queue_widget)
-
-        queue_group = self.create_styled_group_box("Download Queue")
-        queue_inner_layout = QVBoxLayout(queue_group)
-        self.download_queue_widget = DownloadQueueWidget(self.theme)
-        queue_inner_layout.addWidget(self.download_queue_widget)
-        queue_layout.addWidget(queue_group)
-
-        queue_log_splitter.addWidget(queue_widget)
-
-        # Right: Log Output Section
-        log_widget = QWidget()
-        log_layout = QVBoxLayout(log_widget)
-
-        log_group = self.create_styled_group_box("Download Log")
-        log_group_layout = QVBoxLayout(log_group)
-        self.log_widget = LogWidget(self.theme)
-        self.log_widget.setMinimumHeight(200)
-        log_group_layout.addWidget(self.log_widget)
-        log_layout.addWidget(log_group)
-
-        queue_log_splitter.addWidget(log_widget)
-        queue_log_splitter.setSizes([600, 400])  # Optional: Set initial sizes
-
-        # Add the horizontal splitter to the main layout
-        layout.addWidget(url_widget)
-        layout.addWidget(queue_log_splitter, 1)  # Stretch to fill space
-    
-    def create_styled_group_box(self, title):
-        """Create a styled group box"""
-        group = QGroupBox(title)
-        group.setStyleSheet(f"""
-            QGroupBox {{
                 border: 1px solid {self.theme['border']};
-                border-radius: 8px;
-                margin-top: 1ex;
-                font-weight: bold;
-                color: {self.theme['text']};
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
+                border-radius: 4px;
+                padding: 5px;
             }}
         """)
-        return group
-    
-    def get_primary_button_style(self):
-        """Get style for primary buttons"""
-        return f"""
+        
+        # Example URL
+        example_label = QLabel("Example: https://civitai.com/models/1234/cool-model")
+        example_label.setStyleSheet(f"color: {self.theme['text_secondary']}; font-style: italic; font-size: 11px;")
+        
+        url_layout.addWidget(url_label)
+        url_layout.addWidget(self.url_input)
+        url_layout.addWidget(example_label)
+        
+        # Options row
+        options_layout = QHBoxLayout()
+        
+        max_images_label = QLabel("Max Images:")
+        max_images_label.setStyleSheet(f"color: {self.theme['text_secondary']};")
+        
+        self.max_images_input = QSpinBox()
+        self.max_images_input.setRange(1, 100)
+        self.max_images_input.setValue(9)
+        self.max_images_input.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: {self.theme['input_bg']};
+                color: {self.theme['text']};
+                border: 1px solid {self.theme['border']};
+                border-radius: 4px;
+                padding: 5px;
+                min-width: 60px;
+            }}
+        """)
+        
+        options_layout.addWidget(max_images_label)
+        options_layout.addWidget(self.max_images_input)
+        options_layout.addStretch()
+        
+        # Add button
+        self.add_button = QPushButton("Add to Queue")
+        self.add_button.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.theme['accent']};
                 color: white;
                 border: none;
                 border-radius: 4px;
-                padding: 8px;
+                padding: 8px 16px;
                 font-weight: bold;
             }}
             QPushButton:hover {{
                 background-color: {self.theme['accent_hover']};
             }}
             QPushButton:pressed {{
-                background-color: {self.theme['accent_pressed']};
+                background-color: {self.theme['accent']};
             }}
-        """
+        """)
+        self.add_button.clicked.connect(self.add_urls)
+        
+        options_layout.addWidget(self.add_button)
+        
+        layout.addWidget(title)
+        layout.addLayout(url_layout)
+        layout.addLayout(options_layout)
+        
+        return section
     
-    def get_secondary_button_style(self):
-        """Get style for secondary buttons"""
-        return f"""
-            QPushButton {{
-                background-color: {self.theme['text_tertiary']};
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {self.theme['text_secondary']};
-            }}
-        """
+    def add_urls(self):
+        """Process URLs from input and add to queue"""
+        text = self.url_input.toPlainText().strip()
+        if not text:
+            return
+        
+        # Update max images in config
+        self.parent_window.config["top_image_count"] = self.max_images_input.value()
+        
+        # Extract URLs
+        import re
+        url_pattern = r'https?://civitai\.com/models/\S+'
+        urls = []
+        
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            
+            if re.match(url_pattern, line):
+                urls.append(line)
+            else:
+                self.log(f"Invalid URL format: {line}", "error")
+        
+        if urls:
+            # Start download
+            self.parent_window.start_batch_download(urls)
+            
+            # Clear input
+            self.url_input.clear()
     
     def set_theme(self, theme):
         """Update the theme"""
         self.theme = theme
         
-        # Update UI styles
-        self.queue_status_label.setStyleSheet(f"font-size: 14px; color: {self.theme['text_secondary']};")
+        # Update log widget theme
+        self.log_widget.set_theme(theme)
+        
+        # Update queue widget theme
+        self.queue_widget.set_theme(theme)
+        
+        # Update URL input section
         self.url_input.setStyleSheet(f"""
-            QPlainTextEdit {{
+            QTextEdit {{
                 background-color: {self.theme['input_bg']};
                 color: {self.theme['text']};
-                border: 1px solid {self.theme['input_border']};
+                border: 1px solid {self.theme['border']};
                 border-radius: 4px;
-                padding: 4px;
-                font-family: 'Consolas', 'Courier New', monospace;
+                padding: 5px;
             }}
         """)
         
-        self.download_btn.setStyleSheet(self.get_primary_button_style())
-        self.clear_btn.setStyleSheet(self.get_secondary_button_style())
+        self.max_images_input.setStyleSheet(f"""
+            QSpinBox {{
+                background-color: {self.theme['input_bg']};
+                color: {self.theme['text']};
+                border: 1px solid {self.theme['border']};
+                border-radius: 4px;
+                padding: 5px;
+                min-width: 60px;
+            }}
+        """)
         
-        # Update child widgets
-        self.download_queue_widget.set_theme(self.theme)
-        self.log_widget.set_theme(self.theme)
+        self.add_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.theme['accent']};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {self.theme['accent_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {self.theme['accent']};
+            }}
+        """)
         
-        # Update group boxes
-        for child in self.findChildren(QGroupBox):
-            child.setStyleSheet(f"""
-                QGroupBox {{
-                    border: 1px solid {self.theme['border']};
+        # Update frame
+        for frame in self.findChildren(QFrame):
+            frame.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {self.theme['card']};
                     border-radius: 8px;
-                    margin-top: 1ex;
-                    font-weight: bold;
-                    color: {self.theme['text']};
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 5px;
+                    border: 1px solid {self.theme['border']};
                 }}
             """)
+        
+        # Update labels
+        for label in self.findChildren(QLabel):
+            if "font-size: 16px" in label.styleSheet():
+                label.setStyleSheet(f"""
+                    font-size: 16px;
+                    font-weight: bold;
+                    color: {self.theme['text']};
+                """)
+            elif "font-style: italic" in label.styleSheet():
+                label.setStyleSheet(f"color: {self.theme['text_secondary']}; font-style: italic; font-size: 11px;")
+            else:
+                label.setStyleSheet(f"color: {self.theme['text_secondary']};")
     
-    def log(self, message, status="info"):
-        """Add a log message"""
-        self.log_widget.add_log(message, status)
+    def log(self, message, level="info"):
+        """Add a message to the log"""
+        self.log_widget.add_message(message, level)
+    
+    def update_download_task(self, task):
+        """Update the download task in the queue widget"""
+        self.queue_widget.update_task(task)
     
     def set_queue_status(self, queue_size):
-        """Update queue status label"""
-        self.queue_status_label.setText(f"Queue: {queue_size}")
+        """Update queue status and update queue widget"""
+        all_tasks = self.parent_window.download_queue.get_all_tasks()
+        self.queue_widget.update_tasks(all_tasks)
     
-    def update_download_task(self, task: DownloadTask):
-        """Update a download task"""
-        self.download_queue_widget.update_task(task)
+    def cancel_download(self, url):
+        """Signal to cancel a download"""
+        self.parent_window.cancel_download(url)
     
-    def start_batch_download(self):
-        """Start batch download of models"""
-        urls = self.url_input.toPlainText().strip().split("\n")
-        urls = [url.strip() for url in urls if url.strip()]
-        
-        # Pass to parent window for processing
-        parent = self.parent
-        if hasattr(parent, "start_batch_download"):
-            parent.start_batch_download(urls)
+    def clear_queue(self):
+        """Signal to clear the download queue"""
+        self.parent_window.clear_download_queue()

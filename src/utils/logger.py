@@ -1,58 +1,40 @@
+
 import logging
+import os
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from datetime import datetime
 
-def setup_logger(log_level: str = "info") -> logging.Logger:
-    """
-    Set up application logger
+# Configure logger
+def setup_logger(log_level="INFO"):
+    """Setup and configure logger"""
+    # Create logs directory if it doesn't exist
+    log_dir = Path.home() / ".civitai_manager" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     
-    Args:
-        log_level: Logging level (debug, info, warning, error)
+    # Set log file path with timestamp
+    log_file = log_dir / f"civitai_manager_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
-    Returns:
-        Configured logger instance
-    """
-    # Create logger
-    logger = logging.getLogger("civitai_model_manager")
+    # Convert string log level to logging level
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
     
-    # Set level based on configuration
-    level_map = {
-        "debug": logging.DEBUG,
-        "info": logging.INFO,
-        "warning": logging.WARNING,
-        "error": logging.ERROR
-    }
-    logger.setLevel(level_map.get(log_level.lower(), logging.INFO))
+    # Configure root logger
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
     
-    # Create handlers if not already configured
-    if not logger.handlers:
-        # Console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(console_handler)
-        
-        # File handler
-        try:
-            log_path = Path.home() / ".civitai_model_manager_logs"
-            log_path.mkdir(exist_ok=True)
-            
-            log_file = log_path / f"log_{datetime.now().strftime('%Y%m%d')}.txt"
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(file_handler)
-        except Exception as e:
-            logger.warning(f"Could not set up file logging: {str(e)}")
+    logger = logging.getLogger("civitai_manager")
+    logger.info(f"Logger initialized. Log file: {log_file}")
     
     return logger
 
-def get_logger() -> logging.Logger:
-    """Get the application logger"""
-    logger = logging.getLogger("civitai_model_manager")
-    
-    # If logger not set up yet, set up with defaults
-    if not logger.handlers:
-        logger = setup_logger()
-    
-    return logger
+def get_logger(name=None):
+    """Get a named logger"""
+    if name:
+        return logging.getLogger(f"civitai_manager.{name}")
+    return logging.getLogger("civitai_manager")

@@ -1,21 +1,23 @@
+
 import os
 import shutil
+import json
 from pathlib import Path
 from typing import Dict, Tuple, List, Optional
 from datetime import datetime
 
-from src.constants import MODEL_TYPES
+from src.constants import MODEL_TYPES, FILE_EXTENSIONS
 from src.utils.formatting import format_size
 from src.utils.logger import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 class StorageManager:
     """
     Manager for storage-related operations
     """
     def __init__(self, comfy_path: str):
-        self.comfy_path = Path(comfy_path)
+        self.comfy_path = Path(comfy_path) if comfy_path else None
     
     def get_storage_usage(self) -> Tuple[int, int, Dict[str, int]]:
         """
@@ -24,7 +26,7 @@ class StorageManager:
         Returns:
             Tuple of (total_size, free_size, category_sizes)
         """
-        if not self.comfy_path.exists():
+        if not self.comfy_path or not self.comfy_path.exists():
             logger.error(f"ComfyUI directory not found: {self.comfy_path}")
             return 0, 0, {}
         
@@ -46,11 +48,14 @@ class StorageManager:
         
         # Simplify to main categories for display
         simplified = {
-            "LoRAs": category_sizes.get("LORA", 0),
+            "LoRAs": category_sizes.get("LORA", 0) + category_sizes.get("LoCon", 0),
             "Checkpoints": category_sizes.get("Checkpoint", 0),
             "Embeddings": category_sizes.get("Embeddings", 0),
+            "VAEs": category_sizes.get("VAE", 0),
+            "ControlNet": category_sizes.get("Controlnet", 0),
+            "Upscalers": category_sizes.get("Upscaler", 0),
             "Other": sum(v for k, v in category_sizes.items() 
-                        if k not in ["LORA", "Checkpoint", "Embeddings"])
+                        if k not in ["LORA", "LoCon", "Checkpoint", "Embeddings", "VAE", "Controlnet", "Upscaler"])
         }
         
         return total, free, simplified
@@ -82,7 +87,7 @@ class StorageManager:
         Returns:
             List of model data dictionaries
         """
-        if not self.comfy_path.exists():
+        if not self.comfy_path or not self.comfy_path.exists():
             logger.error(f"ComfyUI directory not found: {self.comfy_path}")
             return []
         
@@ -98,11 +103,12 @@ class StorageManager:
             for metadata_file in type_dir.glob("**/metadata.json"):
                 try:
                     with open(metadata_file, 'r', encoding='utf-8') as f:
-                        import json
                         metadata = json.load(f)
                     
                     # Check if this is a valid model metadata file
                     if "id" in metadata and "name" in metadata:
+                        # Add path information
+                        metadata["local_path"] = str(metadata_file.parent)
                         models.append(metadata)
                 except Exception as e:
                     logger.error(f"Error processing metadata file {metadata_file}: {str(e)}")
@@ -148,6 +154,9 @@ class StorageManager:
         Returns:
             Path to model folder if found, None otherwise
         """
+        if not self.comfy_path or not self.comfy_path.exists():
+            return None
+            
         model_type_folder = MODEL_TYPES.get(model_type, MODEL_TYPES["Other"])
         
         # Sanitize model name for folder name
@@ -163,7 +172,6 @@ class StorageManager:
         for metadata_file in (self.comfy_path / model_type_folder).glob("**/metadata.json"):
             try:
                 with open(metadata_file, 'r', encoding='utf-8') as f:
-                    import json
                     metadata = json.load(f)
                 
                 if str(metadata.get("id")) == str(model_id):
@@ -210,15 +218,120 @@ class StorageManager:
             File type string
         """
         suffix = file_path.suffix.lower()
-        if suffix in ['.safetensors', '.ckpt', '.pt', '.pth']:
-            return "Model"
-        elif suffix in ['.jpg', '.jpeg', '.png', '.webp', '.gif']:
-            return "Image"
-        elif suffix in ['.mp4', '.webm', '.avi', '.mov']:
-            return "Video"
-        elif suffix == '.json':
-            return "JSON"
-        elif suffix == '.html':
-            return "HTML"
-        else:
-            return suffix[1:].upper() if suffix else "Unknown"
+        
+        for type_name, extensions in FILE_EXTENSIONS.items():
+            if suffix in extensions:
+                return type_name.capitalize()
+        
+        return suffix[1:].upper() if suffix else "Unknown"
+    
+    def find_duplicates(self) -> List[Dict]:
+        """
+        Find duplicate models based on name, type and base model
+        
+        Returns:
+            List of duplicate groups
+        """
+        models = self.scan_models()
+        
+        # Group models by name, type and base model
+        groups = {}
+        for model in models:
+            key = f"{model['name']}|{model['type']}|{model['base_model']}"
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(model)
+        
+        # Filter for groups with more than one model
+        duplicates = [group for group in groups.values() if len(group) > 1]
+        
+        return duplicates
+    
+    def export_models(self, model_paths: List[Path], export_path: Path) -> Dict:
+        """
+        Export models to a specified path
+        
+        Args:
+            model_paths: List of model paths to export
+            export_path: Path to export to
+            
+        Returns:
+            Dictionary with results
+        """
+        results = {
+            "success": 0,
+            "failed": 0,
+            "details": []
+        }
+        
+        if not export_path.exists():
+            export_path.mkdir(parents=True)
+        
+        for path in model_paths:
+            try:
+                if path.is_dir():
+                    target_path = export_path / path.name
+                    shutil.copytree(path, target_path)
+                else:
+                    shutil.copy2(path, export_path)
+                
+                results["success"] += 1
+                results["details"].append({
+                    "path": str(path),
+                    "success": True
+                })
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({
+                    "path": str(path),
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        return results
+    
+    def get_model_count_by_type(self) -> Dict[str, int]:
+        """
+        Get model counts by type
+        
+        Returns:
+            Dictionary mapping types to counts
+        """
+        models = self.scan_models()
+        
+        counts = {}
+        for model in models:
+            model_type = model.get('type', 'Other')
+            counts[model_type] = counts.get(model_type, 0) + 1
+        
+        return counts
+    
+    def find_orphaned_files(self) -> List[Dict]:
+        """
+        Find orphaned files (files not associated with any model)
+        
+        Returns:
+            List of orphaned files info
+        """
+        if not self.comfy_path or not self.comfy_path.exists():
+            return []
+        
+        # Get all model directories
+        model_dirs = set()
+        for metadata_file in self.comfy_path.glob("**/metadata.json"):
+            model_dirs.add(str(metadata_file.parent))
+        
+        # Find all model files
+        orphaned = []
+        for model_type, folder_path in MODEL_TYPES.items():
+            type_dir = self.comfy_path / folder_path
+            if not type_dir.exists():
+                continue
+                
+            for ext in FILE_EXTENSIONS["model"]:
+                for file_path in type_dir.glob(f"**/*{ext}"):
+                    parent_dir = str(file_path.parent)
+                    if parent_dir not in model_dirs:
+                        orphaned.append(self.get_file_info(file_path))
+        
+        return orphaned

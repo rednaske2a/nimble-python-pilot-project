@@ -1,3 +1,4 @@
+
 import os
 import re
 import time
@@ -10,7 +11,10 @@ from pathlib import Path
 from queue import Queue
 from typing import Dict, Optional, List, Callable, Any
 from urllib.parse import urlparse
-import requests, json
+import requests
+import json
+import logging
+
 from PySide6.QtCore import QObject, Signal
 
 from src.api.civitai_api import CivitaiAPI
@@ -18,9 +22,8 @@ from src.constants import MODEL_TYPES, DOWNLOAD_STATUS
 from src.models.download_task import DownloadTask
 from src.models.model_info import ModelInfo
 from src.utils.logger import get_logger
-import logging
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 class DownloadQueue(QObject):
     """
@@ -29,44 +32,104 @@ class DownloadQueue(QObject):
     queue_updated = Signal(int)  # queue size
     download_started = Signal(str)  # url
     task_updated = Signal(DownloadTask)  # task
+    queue_reordered = Signal()  # Emitted when queue is reordered
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.queue = Queue()
         self.tasks = {}  # url -> DownloadTask
+        self.queue = []  # List of URL strings in queue order
         self.current_url = None
         self.is_processing = False
     
     def add_url(self, url):
         """Add a URL to the queue"""
-        self.queue.put(url)
+        url = url.strip()
+        if not url:
+            return False
+            
+        if url in self.tasks and self.tasks[url].status in [DOWNLOAD_STATUS["QUEUED"], DOWNLOAD_STATUS["DOWNLOADING"]]:
+            # URL already in queue and active
+            logger.info(f"URL already in queue: {url}")
+            return False
+            
+        # Add to queue
+        self.queue.append(url)
+        
         # Create a new task
-        task = DownloadTask(url=url)
+        task = DownloadTask(url=url, priority=len(self.queue))
         self.tasks[url] = task
         self.task_updated.emit(task)
-        self.queue_updated.emit(self.queue.qsize())
+        self.queue_updated.emit(len(self.queue))
+        return True
     
     def add_urls(self, urls):
         """Add multiple URLs to the queue"""
+        added_count = 0
         for url in urls:
-            url = url.strip()
-            if url:
-                self.add_url(url)
+            if self.add_url(url):
+                added_count += 1
+        return added_count
     
     def get_next_url(self):
-        """Get the next URL from the queue"""
-        if not self.queue.empty():
-            url = self.queue.get()
-            self.current_url = url
-            # Update task status
+        """Get the next URL from the queue based on priority"""
+        if not self.queue:
+            return None
+            
+        # Get the highest priority URL (first in queue)
+        url = self.queue.pop(0)
+        self.current_url = url
+        
+        # Update task status
+        if url in self.tasks:
+            task = self.tasks[url]
+            task.status = DOWNLOAD_STATUS["DOWNLOADING"]
+            task.start_time = time.time()
+            self.task_updated.emit(task)
+            
+        self.queue_updated.emit(len(self.queue))
+        return url
+    
+    def move_to_top(self, url):
+        """Move a URL to the top of the queue"""
+        if url in self.queue:
+            self.queue.remove(url)
+            self.queue.insert(0, url)
+            
+            # Update priorities
+            self._update_priorities()
+            
+            self.queue_reordered.emit()
+            return True
+        return False
+    
+    def move_up(self, url):
+        """Move a URL up in the queue"""
+        if url in self.queue:
+            idx = self.queue.index(url)
+            if idx > 0:
+                self.queue[idx], self.queue[idx-1] = self.queue[idx-1], self.queue[idx]
+                self._update_priorities()
+                self.queue_reordered.emit()
+                return True
+        return False
+    
+    def move_down(self, url):
+        """Move a URL down in the queue"""
+        if url in self.queue:
+            idx = self.queue.index(url)
+            if idx < len(self.queue) - 1:
+                self.queue[idx], self.queue[idx+1] = self.queue[idx+1], self.queue[idx]
+                self._update_priorities()
+                self.queue_reordered.emit()
+                return True
+        return False
+    
+    def _update_priorities(self):
+        """Update task priorities based on queue order"""
+        for i, url in enumerate(self.queue):
             if url in self.tasks:
-                task = self.tasks[url]
-                task.status = DOWNLOAD_STATUS["DOWNLOADING"]
-                task.start_time = time.time()
-                self.task_updated.emit(task)
-            self.queue_updated.emit(self.queue.qsize())
-            return url
-        return None
+                self.tasks[url].priority = i
+                self.task_updated.emit(self.tasks[url])
     
     def update_task(self, url, **kwargs):
         """Update a task's properties"""
@@ -96,30 +159,48 @@ class DownloadQueue(QObject):
         """Cancel a task"""
         if url in self.tasks:
             task = self.tasks[url]
+            
+            # Remove from queue if it's still there
+            if url in self.queue:
+                self.queue.remove(url)
+                self.queue_updated.emit(len(self.queue))
+                
+            # Update task status
             task.status = DOWNLOAD_STATUS["CANCELED"]
             task.end_time = time.time()
             self.task_updated.emit(task)
+            
+            return True
+        return False
     
     def clear(self):
         """Clear the queue"""
         # Mark all queued tasks as canceled
-        while not self.queue.empty():
-            url = self.queue.get()
+        for url in self.queue:
             if url in self.tasks and self.tasks[url].status == DOWNLOAD_STATUS["QUEUED"]:
-                self.cancel_task(url)
+                self.tasks[url].status = DOWNLOAD_STATUS["CANCELED"]
+                self.tasks[url].end_time = time.time()
+                self.task_updated.emit(self.tasks[url])
+                
+        # Clear the queue list
+        self.queue.clear()
         self.queue_updated.emit(0)
     
     def size(self):
         """Get the size of the queue"""
-        return self.queue.qsize()
+        return len(self.queue)
     
     def is_empty(self):
         """Check if the queue is empty"""
-        return self.queue.empty()
+        return len(self.queue) == 0
     
     def get_all_tasks(self):
         """Get all tasks"""
         return list(self.tasks.values())
+    
+    def get_queued_tasks(self):
+        """Get all queued tasks in queue order"""
+        return [self.tasks[url] for url in self.queue if url in self.tasks]
 
 
 class DownloadWorker(threading.Thread):
@@ -136,7 +217,7 @@ class DownloadWorker(threading.Thread):
         self.is_cancelled = False
         self.api = CivitaiAPI(
             api_key=config.get("api_key", ""),
-            fetch_batch_size=config.get("fetch_batch_size", 200)
+            fetch_batch_size=config.get("fetch_batch_size", 100)
         )
         
     def run(self):
@@ -153,7 +234,7 @@ class DownloadWorker(threading.Thread):
             model_info = self.api.fetch_model_info(
                 model_id, 
                 version_id,
-                max_images=self.config.get("top_image_count", 500)
+                max_images=self.config.get("top_image_count", 9)
             )
             
             if not model_info:
@@ -274,7 +355,7 @@ class DownloadWorker(threading.Thread):
         total_images = len(images)
         downloaded = 0
         
-        with ThreadPoolExecutor(max_workers=self.config.get("download_threads", 5)) as executor:
+        with ThreadPoolExecutor(max_workers=self.config.get("download_threads", 3)) as executor:
             futures = []
             
             for img in images:
@@ -346,7 +427,7 @@ class DownloadWorker(threading.Thread):
             self.log(f"Error saving metadata: {str(e)}", "error")
     
     def save_html(self, folder: Path, model_info: ModelInfo) -> Path:
-        """Generate HTML summary file"""
+        """Generate HTML summary file with image gallery and metadata"""
         model_url = f"https://civitai.com/models/{model_info.id}"
         
         lines = [
@@ -553,13 +634,12 @@ document.addEventListener('keydown', (e) => {
 class DownloadManager:
     """Manager for downloading models from Civitai"""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config):
+        """Initialize the download manager"""
         self.config = config
         self.active_downloads = {}  # url -> DownloadWorker
         
-    def start_download(self, url: str, 
-                      progress_callback: Callable[[str, int, int, str], None],
-                      completion_callback: Callable[[bool, str, Optional[ModelInfo]], None]) -> bool:
+    def start_download(self, url, progress_callback, completion_callback):
         """
         Start downloading a model
         
@@ -587,7 +667,7 @@ class DownloadManager:
         
         return True
     
-    def cancel_download(self, url: str) -> bool:
+    def cancel_download(self, url):
         """
         Cancel a download
         
@@ -604,9 +684,13 @@ class DownloadManager:
             return True
         return False
     
-    def cancel_all_downloads(self) -> None:
+    def cancel_all_downloads(self):
         """Cancel all active downloads"""
         for url, worker in list(self.active_downloads.items()):
             worker.cancel()
         self.active_downloads.clear()
         logger.info("All downloads cancelled")
+    
+    def get_active_downloads_count(self):
+        """Get the number of active downloads"""
+        return len(self.active_downloads)
