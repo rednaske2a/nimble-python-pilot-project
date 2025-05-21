@@ -22,6 +22,7 @@ from src.constants import MODEL_TYPES, DOWNLOAD_STATUS
 from src.models.download_task import DownloadTask
 from src.models.model_info import ModelInfo
 from src.utils.logger import get_logger
+from src.utils.bandwidth_monitor import BandwidthMonitor
 
 logger = get_logger(__name__)
 
@@ -89,40 +90,23 @@ class DownloadQueue(QObject):
         self.queue_updated.emit(len(self.queue))
         return url
     
-    def move_to_top(self, url):
-        """Move a URL to the top of the queue"""
-        if url in self.queue:
-            self.queue.remove(url)
-            self.queue.insert(0, url)
+    def move_to_position(self, url, position):
+        """Move a URL to a specific position in the queue"""
+        if url not in self.queue:
+            return False
             
-            # Update priorities
-            self._update_priorities()
-            
-            self.queue_reordered.emit()
-            return True
-        return False
-    
-    def move_up(self, url):
-        """Move a URL up in the queue"""
-        if url in self.queue:
-            idx = self.queue.index(url)
-            if idx > 0:
-                self.queue[idx], self.queue[idx-1] = self.queue[idx-1], self.queue[idx]
-                self._update_priorities()
-                self.queue_reordered.emit()
-                return True
-        return False
-    
-    def move_down(self, url):
-        """Move a URL down in the queue"""
-        if url in self.queue:
-            idx = self.queue.index(url)
-            if idx < len(self.queue) - 1:
-                self.queue[idx], self.queue[idx+1] = self.queue[idx+1], self.queue[idx]
-                self._update_priorities()
-                self.queue_reordered.emit()
-                return True
-        return False
+        # Remove from current position
+        self.queue.remove(url)
+        
+        # Insert at new position, ensuring it's within bounds
+        position = min(max(0, position), len(self.queue))
+        self.queue.insert(position, url)
+        
+        # Update priorities
+        self._update_priorities()
+        
+        self.queue_reordered.emit()
+        return True
     
     def _update_priorities(self):
         """Update task priorities based on queue order"""
@@ -207,14 +191,16 @@ class DownloadWorker(threading.Thread):
     """Worker for downloading models and images from Civitai"""
     
     def __init__(self, url: str, config: Dict, 
-                 progress_callback: Callable[[str, int, int, str], None],
-                 completion_callback: Callable[[bool, str, Optional[ModelInfo]], None]):
+                 progress_callback: Callable[[str, int, int, str, int], None],
+                 completion_callback: Callable[[bool, str, Optional[ModelInfo]], None],
+                 bandwidth_monitor: BandwidthMonitor):
         super().__init__()
         self.url = url
         self.config = config
         self.progress_callback = progress_callback
         self.completion_callback = completion_callback
         self.is_cancelled = False
+        self.bandwidth_monitor = bandwidth_monitor
         self.api = CivitaiAPI(
             api_key=config.get("api_key", ""),
             fetch_batch_size=config.get("fetch_batch_size", 100)
@@ -254,7 +240,8 @@ class DownloadWorker(threading.Thread):
                     model_file = self.api.download_file(
                         model_info.download_url, 
                         folder_path, 
-                        progress_callback=lambda p: self.progress_callback("", p, -1, "")
+                        progress_callback=lambda p, c, t: self.model_progress_callback(p, c, t),
+                        callback_interval=1  # Update progress every 1% for smoother updates
                     )
                     if model_file:
                         model_info.size = model_file.stat().st_size
@@ -276,7 +263,7 @@ class DownloadWorker(threading.Thread):
                 self.download_images(
                     model_info.images, 
                     folder_path, 
-                    progress_callback=lambda p: self.progress_callback("", -1, p, "")
+                    progress_callback=lambda p: self.progress_callback("", -1, p, "", 0)
                 )
                 
                 # Set thumbnail from first image if available
@@ -294,9 +281,10 @@ class DownloadWorker(threading.Thread):
                     from PySide6.QtCore import QUrl
                     QDesktopServices.openUrl(QUrl.fromLocalFile(str(html_path)))
             
-            # Set download date
+            # Set download date and path
             model_info.download_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             model_info.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            model_info.path = str(folder_path)
             
             # Save model metadata
             self.save_metadata(folder_path, model_info)
@@ -308,6 +296,14 @@ class DownloadWorker(threading.Thread):
             self.log(f"Error: {str(e)}", "error")
             self.completion_callback(False, str(e), None)
     
+    def model_progress_callback(self, progress, current_bytes, total_bytes):
+        """Handle model download progress with bandwidth tracking"""
+        if progress != -1:
+            self.progress_callback("", progress, -1, "", current_bytes)
+        
+        # Add data point for bandwidth calculation
+        self.bandwidth_monitor.add_data_point(current_bytes)
+    
     def cancel(self):
         """Cancel the download"""
         self.is_cancelled = True
@@ -315,8 +311,8 @@ class DownloadWorker(threading.Thread):
     
     def log(self, message, status="info"):
         """Log a message"""
-        logger.log(getattr(logger, status.upper(), logging.INFO), message)
-        self.progress_callback(message, -1, -1, status)
+        logger.log(getattr(logging, status.upper(), logging.INFO), message)
+        self.progress_callback(message, -1, -1, status, 0)
     
     def create_folder_structure(self, model_info: ModelInfo) -> Optional[Path]:
         """Create folder structure based on model type and base model"""
@@ -638,6 +634,7 @@ class DownloadManager:
         """Initialize the download manager"""
         self.config = config
         self.active_downloads = {}  # url -> DownloadWorker
+        self.bandwidth_monitor = BandwidthMonitor(window_seconds=60, sample_rate=1)
         
     def start_download(self, url, progress_callback, completion_callback):
         """
@@ -645,7 +642,7 @@ class DownloadManager:
         
         Args:
             url: URL to download
-            progress_callback: Callback for progress updates (message, model_progress, image_progress, status)
+            progress_callback: Callback for progress updates (message, model_progress, image_progress, status, bytes)
             completion_callback: Callback for download completion (success, message, model_info)
             
         Returns:
@@ -656,7 +653,7 @@ class DownloadManager:
             return False
             
         # Create download worker
-        worker = DownloadWorker(url, self.config, progress_callback, completion_callback)
+        worker = DownloadWorker(url, self.config, progress_callback, completion_callback, self.bandwidth_monitor)
         
         # Store worker
         self.active_downloads[url] = worker
@@ -694,3 +691,11 @@ class DownloadManager:
     def get_active_downloads_count(self):
         """Get the number of active downloads"""
         return len(self.active_downloads)
+    
+    def get_bandwidth_stats(self):
+        """Get bandwidth statistics for graphing"""
+        return self.bandwidth_monitor.get_bandwidth_history()
+    
+    def reset_bandwidth_monitor(self):
+        """Reset the bandwidth monitor"""
+        self.bandwidth_monitor.reset()

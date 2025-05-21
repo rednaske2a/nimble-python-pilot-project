@@ -5,7 +5,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 from urllib.parse import urlparse
 
 from src.models.model_info import ModelInfo
@@ -140,26 +140,61 @@ class CivitaiAPI:
         base_model = version_data.get("baseModel", "unknown")
         version_name = version_data.get("name", "")
         
+        # Extract dependencies
+        dependencies = []
+        files = version_data.get("files", [])
+        for file in files:
+            # Look for required VAE or other requirements
+            if file.get("type") == "VAE":
+                dependencies.append({
+                    "type": "VAE",
+                    "name": file.get("name", "Unknown VAE"),
+                    "required": True,
+                    "download_url": None
+                })
+            
+            # Look for metadata with dependencies
+            metadata = file.get("metadata", {})
+            if metadata:
+                # Some models list dependencies in the metadata
+                if "dependencies" in metadata:
+                    deps = metadata["dependencies"]
+                    if isinstance(deps, list):
+                        for dep in deps:
+                            if isinstance(dep, dict):
+                                dependencies.append({
+                                    "type": dep.get("type", "Unknown"),
+                                    "name": dep.get("name", "Unknown Dependency"),
+                                    "required": dep.get("required", False),
+                                    "download_url": dep.get("url")
+                                })
+        
         # Fetch images
         logger.info("Fetching images...")
         images = self.fetch_images(model_id, version_id, max_images)
         logger.info(f"Found {len(images)} images")
         
-        return ModelInfo(
+        model_info = ModelInfo(
             id=model_id,
             name=name,
             description=description,
             type=model_type,
             base_model=base_model,
             version_id=version_id,
+            version_name=version_name,
             download_url=download_url,
             tags=tags,
             images=images,
             nsfw=nsfw,
             creator=creator,
-            version_name=version_name,
-            stats=stats
+            stats=stats,
+            dependencies=dependencies
         )
+        
+        # Calculate overall rating
+        model_info.calculate_overall_rating()
+        
+        return model_info
     
     def fetch_images(self, model_id: int, version_id: Optional[int], 
                     max_images: int = 500) -> List[Dict]:
@@ -227,14 +262,15 @@ class CivitaiAPI:
             all_items = nsfw_items + sfw_items
             
             # Remove duplicates
-            unique = {img["id"]: img for img in all_items}.values()
+            unique = {img["id"]: img for img in all_items}
             
-            # Sort by score (likes + hearts + laughs)
+            # Sort by reaction score (likes + hearts + laughs with weights)
+            from src.utils.formatting import calculate_reaction_score
+            
             def score(img):
-                stats = img.get("stats", {})
-                return stats.get("likeCount", 0) + stats.get("heartCount", 0) + stats.get("laughCount", 0)
+                return calculate_reaction_score(img.get("stats", {}))
                 
-            sorted_items = sorted(unique, key=score, reverse=True)
+            sorted_items = sorted(unique.values(), key=score, reverse=True)
             
             # Limit to top N images
             return sorted_items[:max_images]
@@ -243,7 +279,9 @@ class CivitaiAPI:
             logger.error(f"Error fetching images: {str(e)}")
             return []
     
-    def download_file(self, url: str, output_path: Path, progress_callback=None) -> Optional[Path]:
+    def download_file(self, url: str, output_path: Path, 
+                     progress_callback: Callable = None,
+                     callback_interval: int = 5) -> Optional[Path]:
         """
         Download a file with progress reporting
         
@@ -251,6 +289,7 @@ class CivitaiAPI:
             url: URL to download
             output_path: Path to save the file
             progress_callback: Callback function for progress updates
+            callback_interval: How often to call the progress callback (percent)
             
         Returns:
             Path to downloaded file if successful, None otherwise
@@ -276,6 +315,9 @@ class CivitaiAPI:
             # Get file size for progress reporting
             total = int(r.headers.get('content-length', 0))
             downloaded = 0
+            last_progress = 0
+            last_report_time = 0
+            current_chunk_size = 0  # To track bytes since last callback
             
             with open(out_path, 'wb') as f:
                 for chunk in r.iter_content(8192):
@@ -284,10 +326,21 @@ class CivitaiAPI:
                         
                     f.write(chunk)
                     downloaded += len(chunk)
+                    current_chunk_size += len(chunk)
                     
                     if progress_callback and total:
                         progress = int(downloaded / total * 100)
-                        progress_callback(progress)
+                        
+                        # Call the callback at every interval or if this is the first or last update
+                        now = time.time()
+                        if (progress >= 100 or 
+                            progress - last_progress >= callback_interval or
+                            now - last_report_time >= 1.0):  # Also update at least every second
+                            
+                            progress_callback(progress, current_chunk_size, total)
+                            last_progress = progress
+                            last_report_time = now
+                            current_chunk_size = 0  # Reset chunk counter
             
             return out_path
             

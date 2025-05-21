@@ -1,9 +1,9 @@
 
 """
-Application constants
+Constants for the application
 """
 
-# Download status constants
+# Download status
 DOWNLOAD_STATUS = {
     "QUEUED": "queued",
     "DOWNLOADING": "downloading",
@@ -12,81 +12,107 @@ DOWNLOAD_STATUS = {
     "CANCELED": "canceled"
 }
 
-# Model type to folder mapping
+# Model types
 MODEL_TYPES = {
-    "Checkpoint": "models/Stable-diffusion",
+    "Checkpoint": "checkpoints",
+    "LORA": "loras",
+    "LoCon": "locons",
     "TextualInversion": "embeddings",
-    "Hypernetwork": "models/hypernetworks",
-    "LORA": "models/Lora",
-    "LoCon": "models/Lora",  # LoCon is treated as LORA in ComfyUI
-    "VAE": "models/VAE",
-    "Controlnet": "models/controlnet",
-    "Upscaler": "models/upscale_models",
-    "Motionmodule": "models/motion_module",
-    "Aesthetic Gradient": "embeddings",
-    "Poses": "models/poses",
+    "Hypernetwork": "hypernetworks",
+    "AestheticGradient": "aesthetics",
+    "MotionModule": "motionmodules",
+    "VAE": "vae",
+    "Upscaler": "upscalers",
+    "ControlNet": "controlnet",
+    "Poses": "poses",
     "Wildcards": "wildcards",
     "Workflows": "workflows",
-    "Other": "models/other"
+    "Other": "others"
 }
 
-# Application themes
-APP_THEMES = {
-    "dark": {
-        "name": "Dark",
-        "window": "#121212",
-        "background": "#181818",
-        "card": "#1E1E1E",
-        "card_hover": "#2A2A2A",
-        "text": "#FFFFFF",
-        "text_secondary": "#B3B3B3",
-        "accent": "#BB86FC",
-        "accent_hover": "#C9A5FD",
-        "border": "#333333",
-        "border_hover": "#555555",
-        "input_bg": "#2A2A2A",
-        "success": "#4CAF50",
-        "success_hover": "#5BBF5E",
-        "warning": "#FFC107",
-        "warning_hover": "#FFD257",
-        "danger": "#F44336",
-        "danger_hover": "#F55A4E",
-        "info": "#2196F3",
-        "info_hover": "#42A5F5",
-        "shadow": "#00000080"
-    },
-    "light": {
-        "name": "Light",
-        "window": "#F5F5F5",
-        "background": "#FFFFFF",
-        "card": "#FFFFFF",
-        "card_hover": "#F9F9F9",
-        "text": "#212121",
-        "text_secondary": "#757575",
-        "accent": "#673AB7",
-        "accent_hover": "#7E57C2",
-        "border": "#E0E0E0",
-        "border_hover": "#BDBDBD",
-        "input_bg": "#F5F5F5",
-        "success": "#4CAF50",
-        "success_hover": "#5BBF5E",
-        "warning": "#FF9800",
-        "warning_hover": "#FFA726",
-        "danger": "#F44336",
-        "danger_hover": "#F55A4E",
-        "info": "#2196F3",
-        "info_hover": "#42A5F5",
-        "shadow": "#00000040"
-    }
+# Base models
+BASE_MODELS = [
+    "SD 1.5",
+    "SD 2.0",
+    "SD 2.1",
+    "SDXL 1.0",
+    "SDXL Turbo",
+    "Stable Cascade",
+    "PixArt Σ",
+    "Stable Video Diffusion",
+    "Other"
+]
+
+# Supported image formats
+IMAGE_FORMATS = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+
+# Supported video formats
+VIDEO_FORMATS = [".mp4", ".webm", ".mkv"]
+
+# Application name
+APP_NAME = "Civitai Model Manager"
+
+# Application version
+APP_VERSION = "2.0"
+
+# Organization name
+ORG_NAME = "CivitaiManager"
+
+# Maximum concurrent downloads
+MAX_CONCURRENT_DOWNLOADS = 3
+
+# Default ComfyUI folder structure paths
+DEFAULT_PATHS = {
+    "checkpoints": "models/checkpoints",
+    "loras": "models/loras",
+    "locons": "models/loras",
+    "embeddings": "models/embeddings",
+    "hypernetworks": "models/hypernetworks",
+    "aesthetics": "models/aesthetic_embeddings",
+    "controlnet": "models/controlnet",
+    "vae": "models/vae",
+    "upscalers": "models/upscalers",
+    "poses": "models/poses",
+    "motionmodules": "models/motion",
+    "wildcards": "wildcards",
+    "workflows": "workflows",
+    "others": "models/other"
 }
 
-# File extensions by type
-FILE_EXTENSIONS = {
-    "model": [".safetensors", ".ckpt", ".pt", ".pth"],
-    "image": [".jpg", ".jpeg", ".png", ".webp", ".gif"],
-    "video": [".mp4", ".webm"],
-    "metadata": [".json", ".yaml", ".yml"],
+# Cache expiration time (in seconds)
+CACHE_EXPIRATION = 86400  # 24 hours
+
+# Image thumbnails size
+THUMBNAIL_SIZE = (256, 256)
+
+# Gallery columns default
+DEFAULT_GALLERY_COLUMNS = 4
+
+# Gallery view modes
+VIEW_MODE = {
+    "CARD": "card",
+    "LIST": "list"
 }
 
-# Model view columns
-MODEL_VIEW_COLUMNS = ["Name", "Type", "Base Model", "Size", "Download Date", "Rating"]
+# Sort options
+SORT_OPTIONS = {
+    "DATE": "date",
+    "NAME": "name",
+    "SIZE": "size",
+    "TYPE": "type",
+    "RATING": "rating"
+}
+
+# Filter options
+FILTER_NSFW = {
+    "ALL": "all",
+    "HIDE": "hide",
+    "ONLY": "only"
+}
+
+# Batch operations
+BATCH_OPERATIONS = {
+    "DELETE": "delete",
+    "EXPORT": "export",
+    "MOVE": "move"
+}

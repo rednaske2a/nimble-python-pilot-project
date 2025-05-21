@@ -1,14 +1,43 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, 
-    QPushButton, QTextEdit, QLineEdit, QSpinBox, QFrame
+    QPushButton, QTextEdit, QLineEdit, QSpinBox, QFrame,
+    QProgressBar
 )
-from PySide6.QtCore import Qt, Signal, QRegularExpression
+from PySide6.QtCore import Qt, Signal, QRegularExpression, QTimer
 from PySide6.QtGui import QRegularExpressionValidator
 
-from src.ui.components.download_queue_widget import DownloadQueueWidget
 from src.ui.components.log_widget import LogWidget
+from src.ui.components.smart_queue_widget import SmartQueueWidget
 from src.models.download_task import DownloadTask
+from src.utils.formatting import extract_url_from_text
+
+class LoadingButton(QPushButton):
+    """Button with loading animation"""
+    
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.original_text = text
+        self.dots = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_dots)
+    
+    def start_loading(self):
+        """Start loading animation"""
+        self.setEnabled(False)
+        self.timer.start(500)
+    
+    def stop_loading(self):
+        """Stop loading animation"""
+        self.timer.stop()
+        self.setText(self.original_text)
+        self.setEnabled(True)
+    
+    def update_dots(self):
+        """Update loading dots animation"""
+        self.dots = (self.dots + 1) % 4
+        dots_text = "." * self.dots
+        self.setText(f"{self.original_text}{dots_text}")
 
 class DownloadTab(QWidget):
     """Tab for download management"""
@@ -46,9 +75,10 @@ class DownloadTab(QWidget):
         right_layout = QVBoxLayout(right_panel)
         
         # Queue widget
-        self.queue_widget = DownloadQueueWidget(self.theme)
+        self.queue_widget = SmartQueueWidget(self.theme)
         self.queue_widget.cancel_requested.connect(self.cancel_download)
         self.queue_widget.clear_requested.connect(self.clear_queue)
+        self.queue_widget.move_requested.connect(self.move_in_queue)
         
         right_layout.addWidget(self.queue_widget)
         
@@ -56,7 +86,7 @@ class DownloadTab(QWidget):
         self.splitter.addWidget(left_panel)
         self.splitter.addWidget(right_panel)
         
-        # Set initial sizes
+        # Set initial sizes (60% left, 40% right)
         self.splitter.setSizes([int(self.width() * 0.6), int(self.width() * 0.4)])
         
         layout.addWidget(self.splitter)
@@ -92,6 +122,7 @@ class DownloadTab(QWidget):
         self.url_input = QTextEdit()
         self.url_input.setPlaceholderText("https://civitai.com/models/...")
         self.url_input.setMinimumHeight(80)
+        self.url_input.setAcceptDrops(True)
         self.url_input.setStyleSheet(f"""
             QTextEdit {{
                 background-color: {self.theme['input_bg']};
@@ -134,8 +165,8 @@ class DownloadTab(QWidget):
         options_layout.addWidget(self.max_images_input)
         options_layout.addStretch()
         
-        # Add button
-        self.add_button = QPushButton("Add to Queue")
+        # Add button with loading animation
+        self.add_button = LoadingButton("Add to Queue")
         self.add_button.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.theme['accent']};
@@ -150,6 +181,9 @@ class DownloadTab(QWidget):
             }}
             QPushButton:pressed {{
                 background-color: {self.theme['accent']};
+            }}
+            QPushButton:disabled {{
+                background-color: {self.theme['text_secondary']};
             }}
         """)
         self.add_button.clicked.connect(self.add_urls)
@@ -168,23 +202,14 @@ class DownloadTab(QWidget):
         if not text:
             return
         
+        # Start loading animation
+        self.add_button.start_loading()
+        
         # Update max images in config
         self.parent_window.config["top_image_count"] = self.max_images_input.value()
         
         # Extract URLs
-        import re
-        url_pattern = r'https?://civitai\.com/models/\S+'
-        urls = []
-        
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            
-            if re.match(url_pattern, line):
-                urls.append(line)
-            else:
-                self.log(f"Invalid URL format: {line}", "error")
+        urls = extract_url_from_text(text)
         
         if urls:
             # Start download
@@ -192,6 +217,11 @@ class DownloadTab(QWidget):
             
             # Clear input
             self.url_input.clear()
+        else:
+            self.log("No valid Civitai URLs found in input", "error")
+        
+        # Stop loading animation (after a small delay to show animation)
+        QTimer.singleShot(1000, self.add_button.stop_loading)
     
     def set_theme(self, theme):
         """Update the theme"""
@@ -240,6 +270,9 @@ class DownloadTab(QWidget):
             QPushButton:pressed {{
                 background-color: {self.theme['accent']};
             }}
+            QPushButton:disabled {{
+                background-color: {self.theme['text_secondary']};
+            }}
         """)
         
         # Update frame
@@ -285,3 +318,11 @@ class DownloadTab(QWidget):
     def clear_queue(self):
         """Signal to clear the download queue"""
         self.parent_window.clear_download_queue()
+    
+    def move_in_queue(self, url, new_position):
+        """Signal to move a download in the queue"""
+        self.parent_window.move_download_in_queue(url, new_position)
+    
+    def update_bandwidth_graph(self, times, values):
+        """Update bandwidth graph with new data"""
+        self.queue_widget.update_bandwidth_graph(times, values)
